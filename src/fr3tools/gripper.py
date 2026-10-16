@@ -22,7 +22,7 @@ What was learnt on the robot / 실기에서 배운 것:
   50 % and never closes below ``min_width`` (10 mm) unless asked, so a missed object does not end
   in a full-force close on the fingertips.
 * **Width feedback is not a grasp sensor.** With the controller path, ``gripper_position`` follows
-  the *command*: it reported the commanded 12 mm while a 25 mm ring sat between the fingers. Use
+  the *command*: it reported the commanded 12 mm while a 25 mm part sat between the fingers. Use
   a camera, the Modbus grip state (register 0x0201, direct wiring only) or a lift test instead.
 * **Blocking does not block.** ``MoveGripper``'s blocking flag returns at once on firmware v3.8.6;
   :meth:`ControllerGripper.move` polls the position until it settles.
