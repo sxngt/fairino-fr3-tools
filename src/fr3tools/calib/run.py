@@ -428,7 +428,7 @@ def main(argv=None) -> None:
         )
         robot = FakeRobot(start, scene.params)
         sensor = FakeSensor(rig, robot, clock)
-        prior = scene.camera_nominal if a.camera_guess else None
+        prior = pose_to_matrix(a.camera_guess) if a.camera_guess else None
         est = ActiveHandEye(scene.camera_matrix, scene.distortion, board, prior, image_size=scene.image_size)
         result = run_session(
             robot,

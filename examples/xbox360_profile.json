@@ -1,0 +1,44 @@
+{
+  "name": "xbox360-xpad",
+  "axes": {
+    "lx": 0,
+    "ly": 1,
+    "lt": 2,
+    "rx": 3,
+    "ry": 4,
+    "rt": 5,
+    "dpad_x": 6,
+    "dpad_y": 7
+  },
+  "invert": {
+    "ly": true,
+    "ry": true,
+    "dpad_y": true
+  },
+  "buttons": {
+    "a": 0,
+    "b": 1,
+    "x": 2,
+    "y": 3,
+    "lb": 4,
+    "rb": 5,
+    "back": 6,
+    "start": 7,
+    "guide": 8,
+    "ls": 9,
+    "rs": 10
+  },
+  "roles": {
+    "deadman": "rb",
+    "close": "a",
+    "open": "b",
+    "home": "y",
+    "save_home": "x",
+    "start": "start",
+    "stop": "back",
+    "cycle_speed": "lb"
+  },
+  "trigger_rest": -32767,
+  "trigger_full": 32767,
+  "gripper_trigger": "rt"
+}
