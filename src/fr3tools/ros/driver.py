@@ -9,6 +9,11 @@ Interface (names are defaults; see ``--help``):
   the servo stream;
 * services (``std_srvs/Trigger``): ``/fr/servo_start``, ``/fr/servo_stop``, ``/fr/reset_error``,
   ``/fr/stop``, ``/fr/enable``, ``/fr/set_mode_auto``;
+* action ``/fr3_arm_controller/follow_joint_trajectory`` (``control_msgs/FollowJointTrajectory``),
+  for MoveIt: goals are validated (joint names, increasing time, peak joint speed, start within
+  ``start_tol_deg`` of the measured joints) and executed through the same limited servo stream and
+  safety monitor; cancel ends the stream and sends ``StopMotion``. The action and the servo topic
+  are mutually exclusive: whichever starts first owns the stream until it ends;
 * action ``/ag95_gripper_controller/follow_joint_trajectory``
   (``control_msgs/FollowJointTrajectory``): the last point's finger value is the half gap.
 
@@ -55,7 +60,14 @@ from fr3tools import sdk
 from fr3tools.gripper import STROKE_M, ControllerGripper, FakeGripper
 from fr3tools.kinematics import JOINTS as JOINT_TUPLE
 from fr3tools.lock import MotionLock
-from fr3tools.servo import FakeArm, ServoParams, ServoStream
+from fr3tools.servo import (
+    FakeArm,
+    ServoParams,
+    ServoStream,
+    TrajectoryError,
+    TrajectoryExecutor,
+    validate_trajectory,
+)
 
 JOINTS = list(JOINT_TUPLE)
 FINGERS = ["ag95_left_finger_joint", "ag95_right_finger_joint"]
@@ -132,7 +144,108 @@ class FR3Driver(Node):
         )
 
     def _setup_arm_action(self, args) -> None:
-        """Arm trajectory action (added by the trajectory support). / 팔 궤적 액션."""
+        """Arm FollowJointTrajectory action for MoveIt. / MoveIt 용 팔 궤적 액션."""
+        import threading
+
+        self.declare_parameter("goal_tol_deg", args.goal_tol_deg)
+        self._goal_handle = None
+        self._desired: np.ndarray | None = None
+        self._cancel = threading.Event()
+        if args.no_arm_action:
+            return
+        self._arm_server = ActionServer(
+            self,
+            FollowJointTrajectory,
+            args.arm_action,
+            execute_callback=self._arm_execute,
+            goal_callback=self._arm_goal,
+            cancel_callback=self._arm_cancel,
+            callback_group=self.cb,
+        )
+        self.get_logger().info(f"arm trajectory action {args.arm_action}")
+
+    def _check_goal(self, trajectory):
+        """Validate against the measured joints; returns (t, Q). / 현재 관절 기준 검증."""
+        q_now = self.current_q()
+        if q_now is None:
+            raise TrajectoryError("invalid_goal", "no joint state")
+        return validate_trajectory(
+            trajectory.joint_names,
+            [p.time_from_start.sec + p.time_from_start.nanosec * 1e-9 for p in trajectory.points],
+            [list(p.positions) for p in trajectory.points],
+            q_now,
+            JOINTS,
+            float(self.get_parameter("max_joint_speed_deg").value),
+            float(self.get_parameter("start_tol_deg").value),
+        )
+
+    def _arm_goal(self, request):
+        if self.stream.active or self._goal_handle is not None:
+            self.get_logger().warning(f"trajectory rejected: servo stream busy ({self.owner})")
+            return GoalResponse.REJECT
+        try:
+            self._check_goal(request.trajectory)
+        except TrajectoryError as exc:
+            self.get_logger().warning(f"trajectory rejected: {exc}")
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
+    def _arm_cancel(self, goal_handle):
+        self.get_logger().warning("trajectory cancel requested: stopping")
+        self._cancel.set()
+        return CancelResponse.ACCEPT
+
+    def _arm_execute(self, goal_handle):
+        import threading
+
+        result = FollowJointTrajectory.Result()
+        codes = {
+            "successful": FollowJointTrajectory.Result.SUCCESSFUL,
+            "invalid_goal": FollowJointTrajectory.Result.INVALID_GOAL,
+            "invalid_joints": FollowJointTrajectory.Result.INVALID_JOINTS,
+            "path_tolerance": FollowJointTrajectory.Result.PATH_TOLERANCE_VIOLATED,
+            "goal_tolerance": FollowJointTrajectory.Result.GOAL_TOLERANCE_VIOLATED,
+        }
+        try:
+            t, q = self._check_goal(goal_handle.request.trajectory)
+        except TrajectoryError as exc:
+            result.error_code, result.error_string = codes[exc.code], str(exc)
+            goal_handle.abort()
+            return result
+        self._cancel = threading.Event()
+        self._goal_handle = goal_handle
+        executor = TrajectoryExecutor(
+            self.stream,
+            start=lambda: self.start_stream("trajectory"),
+            current_q=lambda: self.current_q(0.2),
+            stop_arm=None if self.fake else self.arm.stop,
+        )
+
+        def on_sample(target) -> None:
+            self._desired = target
+            if goal_handle.is_cancel_requested:
+                self._cancel.set()
+
+        self.get_logger().info(f"trajectory: {len(t)} points, {t[-1]:.2f} s")
+        try:
+            out = executor.run(
+                t, q, self._cancel, float(self.get_parameter("goal_tol_deg").value), on_sample=on_sample
+            )
+        finally:
+            self._goal_handle = None
+            self._desired = None
+            self.owner = ""
+        result.error_code, result.error_string = codes[out.code], out.message
+        if out.status == "succeeded":
+            goal_handle.succeed()
+            self.get_logger().info(f"trajectory done: {out.message}")
+        elif out.status == "canceled":
+            goal_handle.canceled()
+            self.get_logger().warning(f"trajectory canceled after {out.samples} samples")
+        else:
+            goal_handle.abort()
+            self.get_logger().error(f"trajectory aborted: {out.message}")
+        return result
 
     # ---- parameters / 파라미터
     def servo_params(self) -> ServoParams:
@@ -178,7 +291,19 @@ class FR3Driver(Node):
         self._publish_feedback(q)
 
     def _publish_feedback(self, q: np.ndarray) -> None:
-        """Trajectory feedback hook. / 궤적 피드백 자리."""
+        """Trajectory feedback at 10 Hz. / 궤적 피드백(10 Hz)."""
+        handle, desired = getattr(self, "_goal_handle", None), getattr(self, "_desired", None)
+        if handle is None or desired is None or self._ticks % 5:
+            return
+        from trajectory_msgs.msg import JointTrajectoryPoint
+
+        with contextlib.suppress(Exception):
+            fb = FollowJointTrajectory.Feedback()
+            fb.joint_names = JOINTS
+            fb.desired = JointTrajectoryPoint(positions=[float(v) for v in desired])
+            fb.actual = JointTrajectoryPoint(positions=q.tolist())
+            fb.error = JointTrajectoryPoint(positions=(np.asarray(desired) - q).tolist())
+            handle.publish_feedback(fb)
 
     def _tick_status(self) -> None:
         if self.fake:

@@ -252,3 +252,187 @@ class ServoStream:
                 self.warn(message)
             else:
                 self.log(message)
+
+
+# ----------------------------------------------------------------------------- joint trajectories
+class TrajectoryError(ValueError):
+    """A trajectory that must not be executed. / 실행하면 안 되는 궤적.
+
+    ``code`` is ``"invalid_joints"`` or ``"invalid_goal"`` (the FollowJointTrajectory result codes).
+    """
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
+def validate_trajectory(
+    names,
+    times,
+    positions,
+    q_now,
+    joint_names=("j1", "j2", "j3", "j4", "j5", "j6"),
+    max_joint_speed_deg: float = 30.0,
+    start_tol_deg: float = 2.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Check a joint trajectory and return ``(t, Q)`` in ``joint_names`` order (s, rad).
+
+    Rejected: other joint names, an empty trajectory, times that do not increase, a first point
+    more than ``start_tol_deg`` from the measured joints, or a segment faster than
+    ``max_joint_speed_deg``. A first point after ``t = 0`` gets the measured joints prepended at
+    ``t = 0``, so the approach to it is checked and streamed too.
+
+    관절 궤적 검증: 관절 이름, 빈 궤적, 시간 단조 증가, 시작점-현재 자세 편차(``start_tol_deg``),
+    구간 최고 관절 속도(``max_joint_speed_deg``). 첫 점이 t > 0 이면 현재 자세를 t = 0 에 넣는다.
+    """
+    names = list(names)
+    if sorted(names) != sorted(joint_names):
+        raise TrajectoryError("invalid_joints", f"joint names {names} != {list(joint_names)}")
+    if len(times) == 0:
+        raise TrajectoryError("invalid_goal", "empty trajectory")
+    order = [names.index(j) for j in joint_names]
+    t = np.asarray(times, dtype=float)
+    q = np.asarray(positions, dtype=float)[:, order]
+    q_now = np.asarray(q_now, dtype=float)
+    if np.any(~np.isfinite(t)) or np.any(~np.isfinite(q)):
+        raise TrajectoryError("invalid_goal", "non-finite time or position")
+    if len(t) > 1 and not np.all(np.diff(t) > 0):
+        raise TrajectoryError("invalid_goal", "time_from_start does not increase")
+    dev = math.degrees(float(np.abs(q[0] - q_now).max()))
+    if dev > start_tol_deg:
+        raise TrajectoryError(
+            "invalid_goal", f"start is {dev:.2f} deg from the current joints (> {start_tol_deg})"
+        )
+    if t[0] > 1e-6:
+        t = np.concatenate([[0.0], t])
+        q = np.vstack([q_now, q])
+    if len(t) > 1:
+        speed = np.abs(np.diff(q, axis=0)).max(axis=1) / np.diff(t)
+        peak = math.degrees(float(speed.max()))
+        if peak > max_joint_speed_deg:
+            raise TrajectoryError(
+                "invalid_goal", f"peak joint speed {peak:.1f} > {max_joint_speed_deg} deg/s"
+            )
+    return t - t[0], q
+
+
+def resample(t, q, cmd_t: float) -> tuple[np.ndarray, np.ndarray]:
+    """Linear resampling on a ``cmd_t`` grid that always ends at the last point. / 격자 재표본.
+
+    마지막 웨이포인트가 격자 배수가 아니어도 종점을 반드시 포함한다.
+    """
+    t = np.asarray(t, dtype=float)
+    q = np.asarray(q, dtype=float)
+    ts = np.arange(0.0, t[-1] + 1e-9, cmd_t)
+    if ts[-1] < t[-1] - 1e-9:
+        ts = np.append(ts, t[-1])
+    return ts, np.stack([np.interp(ts, t, q[:, i]) for i in range(q.shape[1])], axis=1)
+
+
+@dataclass
+class TrajectoryResult:
+    """Outcome of :meth:`TrajectoryExecutor.run`. / 궤적 실행 결과."""
+
+    status: str  # succeeded / canceled / aborted
+    code: str  # successful / path_tolerance / goal_tolerance / invalid_goal
+    message: str = ""
+    final_dev_deg: float = float("nan")
+    samples: int = 0
+
+
+class TrajectoryExecutor:
+    """Run a validated trajectory through a :class:`ServoStream`. / 서보 스트림으로 궤적 실행.
+
+    The trajectory is fed sample by sample as the stream's target, so the stream's speed and
+    acceleration limits, jump check and safety monitor all stay in force. Nothing else may feed the
+    stream meanwhile (the driver ignores ``/fr/servo_target`` while an action owns it).
+
+    궤적을 표본마다 서보 스트림의 목표로 넣으므로 스트림의 속도·가속도 제한, 급변 검사, 안전 감시가
+    그대로 적용된다. 그동안 다른 목표 입력은 무시된다.
+
+    Parameters
+    ----------
+    stream
+        The servo stream.
+    start
+        ``start() -> (ok, message)``: starts the stream from the measured joints after the readiness
+        checks (``FR3Driver.start_stream`` in the driver).
+    current_q
+        Measured joints (rad) or ``None``.
+    stop_arm
+        Called on cancel after the stream ends (``StopMotion``).
+    """
+
+    def __init__(self, stream: ServoStream, start, current_q, stop_arm=None, sleep=time.sleep):
+        self.stream = stream
+        self.start = start
+        self.current_q = current_q
+        self.stop_arm = stop_arm
+        self.sleep = sleep
+
+    def run(
+        self,
+        t,
+        q,
+        cancel: threading.Event,
+        goal_tol_deg: float = 1.0,
+        settle_s: float = 1.0,
+        on_sample=None,
+    ) -> TrajectoryResult:
+        p = self.stream.params()
+        ok, message = self.start()
+        if not ok:
+            return TrajectoryResult("aborted", "invalid_goal", message)
+        ts, qs = resample(t, q, p.cmd_t)
+        t0 = time.perf_counter()
+        try:
+            for k, target in enumerate(qs):
+                if cancel.is_set():
+                    return self._cancel(k)
+                if not self.stream.active:
+                    return self._failed(k)
+                self.stream.set_target(target)
+                if on_sample is not None:
+                    on_sample(target)
+                lag = t0 + ts[k] + p.cmd_t - time.perf_counter()
+                if lag > 0:
+                    self.sleep(lag)
+            # Hold the last point until the arm is there (the limiter brakes into it).
+            # 마지막 점을 유지하며 도달을 기다린다(제한기가 제동하며 접근).
+            dev = float("inf")
+            t_end = time.perf_counter() + settle_s
+            while time.perf_counter() < t_end:
+                if cancel.is_set():
+                    return self._cancel(len(qs))
+                if not self.stream.active:
+                    return self._failed(len(qs))
+                self.stream.set_target(qs[-1])
+                q_now = self.current_q()
+                if q_now is not None:
+                    dev = math.degrees(float(np.abs(np.asarray(q_now) - qs[-1]).max()))
+                    if dev <= goal_tol_deg:
+                        break
+                self.sleep(p.cmd_t)
+            reason = self.stream.stop()
+            if reason:
+                return TrajectoryResult("aborted", "path_tolerance", reason, dev, len(qs))
+            if dev <= goal_tol_deg:
+                return TrajectoryResult(
+                    "succeeded", "successful", f"end deviation {dev:.3f} deg", dev, len(qs)
+                )
+            return TrajectoryResult(
+                "aborted", "goal_tolerance", f"end deviation {dev:.2f} deg > {goal_tol_deg}", dev, len(qs)
+            )
+        finally:
+            if self.stream.active:
+                self.stream.stop()
+
+    def _cancel(self, k: int) -> TrajectoryResult:
+        self.stream.stop()
+        if self.stop_arm is not None:
+            self.stop_arm()
+        return TrajectoryResult("canceled", "successful", "canceled", samples=k)
+
+    def _failed(self, k: int) -> TrajectoryResult:
+        reason = self.stream.reason or "servo stream ended"
+        return TrajectoryResult("aborted", "path_tolerance", reason, samples=k)
