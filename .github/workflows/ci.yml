@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # No ROS, no vendor SDK, no robot: the tests use fakes and synthetic data.
+    # ROS·제조사 SDK·로봇 없이: 테스트는 가짜 객체와 합성 데이터를 쓴다.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: uv sync --extra dev
+      - name: Format
+        run: uv run ruff format --check src tests examples
+      - name: Lint
+        run: uv run ruff check src tests examples
+      - name: Test
+        run: uv run pytest -q
