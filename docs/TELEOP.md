@@ -11,7 +11,7 @@ LB = 그리퍼 열기·닫기 토글. 속도는 스틱 기울기에 비례한다
 fr3-teleop --fake --fake-pad          # no pad, no ROS: built-in demo on a fake arm
 fr3-teleop --fake                     # your pad, fake arm
 fr3-teleop                            # your pad, real driver, dry run (prints targets)
-fr3-teleop --execute                  # streams to fr3-driver (normal speed)
+fr3-teleop --execute --frame behind   # streams to fr3-driver; stick forward = away from the robot
 fr3-teleop --probe-pad                # raw events, to write a profile
 ```
 
@@ -61,6 +61,13 @@ opened read-only. `--evdev` reads `/dev/input/event*` through python-evdev inste
   commands the closed width, the AG-95 force limit stops the fingers on the object, and the grasp
   is held without squeezing harder. A/B open and close directly. An analog RT mode (two-state with
   hysteresis) is available with `TeleopConfig(trigger_gripper=True)`.
+
+* **Joint-speed cap:** the commanded joints never move faster than `--max-joint-speed` (25°/s by
+  default, under the driver's 30°/s). Near full reach a few cm/s need over 100°/s at the elbow; the
+  Cartesian step is shortened there instead of letting the driver fall behind and end the stream.
+* **Operator frame:** `--frame behind` is for an operator standing behind the robot and looking over
+  it at the table: stick forward moves away from the base, stick right is the operator's right.
+  `--box` is always in the base frame.
 
 ## Safety rules / 안전 규칙
 

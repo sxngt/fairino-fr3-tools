@@ -79,11 +79,18 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--tool-length", type=float, default=0.20, help="flange -> grip point (m) without --params"
     )
-    ap.add_argument("--frame", default="base", help="task frame: base | start | 'x y z yaw_deg' (base frame)")
+    ap.add_argument(
+        "--frame",
+        default="base",
+        help="task frame: base | start | behind (operator behind the robot) | 'x y z yaw_deg' (base frame)",
+    )
+    ap.add_argument(
+        "--max-joint-speed", type=float, default=25.0, help="joint-speed cap of the command (deg/s)"
+    )
     ap.add_argument("--table-z", type=float, default=0.0, help="table height in the base frame (m)")
     ap.add_argument("--min-height", type=float, default=0.05, help="grip point above the table (m)")
     ap.add_argument(
-        "--box", type=float, nargs=6, metavar="V", help="xmin xmax ymin ymax zmin zmax (task frame, m)"
+        "--box", type=float, nargs=6, metavar="V", help="xmin xmax ymin ymax zmin zmax (base frame, m)"
     )
     ap.add_argument("--speed", choices=["slow", "normal", "fast"], default="normal")
     ap.add_argument("--rate", type=float, default=50.0)
@@ -94,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_frame(text: str):
-    if text in ("base", "start"):
+    if text in ("base", "start", "behind"):
         return text
     x, y, z, yaw = (float(v) for v in text.split())
     return transform(rot_z(math.radians(yaw)), (x, y, z))
@@ -129,6 +136,7 @@ def main(argv=None) -> None:
         min_height=a.min_height,
         preset=names.index(a.speed),
         box=None if a.box is None else tuple(zip(a.box[0::2], a.box[1::2], strict=True)),
+        max_joint_speed_deg=a.max_joint_speed,
     )
     ctl = TeleopController(kin, cfg, parse_frame(a.frame))
 
@@ -167,6 +175,7 @@ def main(argv=None) -> None:
     t0 = time.monotonic()
     last_print = 0.0
     session_t = 0.0
+    lag_since = None
     try:
         while True:
             now = time.monotonic()
@@ -196,11 +205,19 @@ def main(argv=None) -> None:
                 # The driver may end the stream on its own (safety trip, error): follow it.
                 # 드라이버가 스트림을 끝낼 수 있다(안전 트립, 에러): 따라서 세션을 끝낸다.
                 driver = robot.status.get("driver", {})
-                if driver and not driver.get("servo_active", True) and now - session_t > 1.0:
+                active = driver.get("servo_active", driver.get("active", True)) if driver else True
+                # Fallback when the driver reports no status: the arm stops following the command.
+                # 상태 보고가 없으면: 팔이 명령을 따라오지 않는 것으로 판단.
+                lag = float(np.degrees(np.abs(robot.joint_positions() - ctl.q_cmd)).max())
+                lag_since = (lag_since or now) if lag > 5.0 else None
+                stuck = lag_since is not None and now - lag_since > 0.5
+                if (not active or stuck) and now - session_t > 1.0:
                     ctl.end()
                     robot.stop_streaming()
                     print(
-                        f"\n[teleop] driver ended the stream: {driver.get('servo_reason') or '?'}", flush=True
+                        f"\n[teleop] driver ended the stream: "
+                        f"{driver.get('servo_reason') or f'arm not following, lag {lag:.1f} deg'}",
+                        flush=True,
                     )
             if ctl.active and out.q is not None:
                 if stream:

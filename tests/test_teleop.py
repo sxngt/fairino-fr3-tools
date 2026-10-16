@@ -344,3 +344,26 @@ def test_scripted_session_on_the_fake_arm():
     assert widths and min(widths) == pytest.approx(0.010) and widths[-1] == pytest.approx(0.095)
     # Y brought it back to the saved home (the start). / Y 로 시작 위치 복귀.
     assert np.linalg.norm(KIN.tcp(robot.joint_positions())[:3, 3] - KIN.tcp(q_start)[:3, 3]) < 0.003
+
+
+def test_joint_speed_is_capped_near_full_reach():
+    cfg = TeleopConfig(preset=2, box_xy=0.5, max_joint_speed_deg=25.0)
+    ctl, _ = started(cfg)
+    prev, worst = ctl.q_cmd.copy(), 0.0
+    t = 0.0
+    for _ in range(300):  # push away from the base towards full reach / 베이스에서 멀어지는 쪽
+        out = ctl.step(pad(ly=-1.0, buttons={"deadman": True}), t)
+        t += DT
+        worst = max(worst, float(np.degrees(np.abs(out.q - prev)).max()) / DT)
+        prev = out.q.copy()
+    assert worst <= 25.0 + 1e-6
+
+
+def test_behind_frame_points_forward_from_the_base_to_the_gripper():
+    ctl = TeleopController(KIN, TeleopConfig(), "behind")
+    ctl.begin(start_joints(KIN))
+    p0 = ctl.p.copy()
+    run(ctl, pad(ly=1.0, buttons={"deadman": True}), 0.5)
+    step = ctl.p - p0
+    radial = np.array([p0[0], p0[1]]) / np.linalg.norm(p0[:2])
+    assert float(step[:2] @ radial) > 0.01  # forward moves away from the base / 앞 = 베이스에서 멀어짐

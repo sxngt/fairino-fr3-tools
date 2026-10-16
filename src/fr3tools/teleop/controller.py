@@ -135,6 +135,11 @@ class TeleopConfig:
     min_height: float = 0.05  # grip point above the table / 테이블 위 최소 높이
     start_tilt_tol_deg: float = 10.0
     max_joint_step_deg: float = 3.0  # per tick / 틱당
+    # Joint-speed cap for the commanded path, a little under the driver's limit (30 deg/s by default):
+    # near full reach a few cm/s need >100 deg/s at the elbow, the driver falls behind and ends the
+    # stream on a target jump. The Cartesian step is shortened instead. / 관절 속도 상한(드라이버 한도
+    # 아래): 팔이 펴진 구간에서 직교 이동을 줄여 드라이버가 뒤처지지 않게 한다.
+    max_joint_speed_deg: float = 25.0
     limit_margin_deg: float = 5.0
     stale_s: float = 0.3
     stop_after_s: float = 1.0
@@ -226,13 +231,22 @@ class TeleopController:
         self.w = 0.0
         if self.frame_spec == "start":
             self.frame = transform(rot_z(self.psi0), self.p)
+        elif self.frame_spec == "behind":
+            # Operator behind the robot looking over it at the table: stick forward = from the base
+            # towards the gripper, stick right = the operator's right. / 로봇 뒤에서 작업대를 보는 시점.
+            fx, fy = self.p[0], self.p[1]
+            self.frame = transform(rot_z(math.atan2(-fx, fy)), (0.0, 0.0, 0.0))
         elif isinstance(self.frame_spec, str):
             self.frame = np.eye(4)
         else:
             self.frame = np.asarray(self.frame_spec, dtype=float)
         p_task = self.frame[:3, :3].T @ (self.p - self.frame[:3, 3])
+        # An explicit box is in the base frame; the default box surrounds the start in task axes.
+        # 지정한 상자는 베이스 좌표, 기본 상자는 시작점 주위(작업 좌표축).
+        self.box_frame = self.frame
         if self.cfg.box is not None:
             self.box = np.asarray(self.cfg.box, dtype=float)
+            self.box_frame = np.eye(4)
         else:
             b = self.cfg
             self.box = np.array(
@@ -261,7 +275,7 @@ class TeleopController:
 
     def _clamp(self, p: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Clamp to the box (task axes) and the floor; returns (p, clamped-axis mask in base). / 제한."""
-        r, o = self.frame[:3, :3], self.frame[:3, 3]
+        r, o = self.box_frame[:3, :3], self.box_frame[:3, 3]
         pt = r.T @ (p - o)
         clipped = np.clip(pt, self.box[:, 0], self.box[:, 1])
         mask_task = np.abs(clipped - pt) > 1e-12
@@ -379,7 +393,24 @@ class TeleopController:
                 out.flags.add("joint jump: holding")
                 self.v, self.w = np.zeros(3), 0.0
             else:
-                self.p, self.psi, self.q_cmd = p_new, psi_new, q
+                rate = np.degrees(np.abs(q - self.q_cmd)).max() / dt
+                if rate > self.cfg.max_joint_speed_deg:
+                    k = self.cfg.max_joint_speed_deg / rate
+                    p_new = self.p + (p_new - self.p) * k
+                    psi_new = self.psi + (psi_new - self.psi) * k
+                    q2 = self.kin.inverse(self.pose(p_new, psi_new), branch=self.branch, q_ref=self.q_cmd)
+                    q = (
+                        None
+                        if q2 is None
+                        else self.kin.wrap_near(q2, self.q_cmd, margin_deg=self.cfg.limit_margin_deg)
+                    )
+                    self.v, self.w = self.v * k, self.w * k
+                    out.flags.add("joint speed limited")
+                if q is None:
+                    out.flags.add("IK/limit: holding")
+                    self.v, self.w = np.zeros(3), 0.0
+                else:
+                    self.p, self.psi, self.q_cmd = p_new, psi_new, q
         out.q = self.q_cmd
         self.last_flags = out.flags
         return out
