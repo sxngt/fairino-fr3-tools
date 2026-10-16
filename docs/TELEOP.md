@@ -62,8 +62,9 @@ opened read-only. `--evdev` reads `/dev/input/event*` through python-evdev inste
   is held without squeezing harder. A/B open and close directly. An analog RT mode (two-state with
   hysteresis) is available with `TeleopConfig(trigger_gripper=True)`.
 
-* **Joint-speed cap:** the commanded joints never move faster than `--max-joint-speed` (25°/s by
-  default, under the driver's 30°/s). Near full reach a few cm/s need over 100°/s at the elbow; the
+* **Joint-speed cap:** the commanded joints never move faster than `--max-joint-speed` (20°/s by
+  default, under the driver's 30°/s; the driver brakes ahead of each target and trails the command
+  by about v²/(2a), 4.4° at 20°/s). Near full reach a few cm/s need over 100°/s at the elbow; the
   Cartesian step is shortened there instead of letting the driver fall behind and end the stream.
 * **Operator frame:** `--frame behind` is for an operator standing behind the robot and looking over
   it at the table: stick forward moves away from the base, stick right is the operator's right.

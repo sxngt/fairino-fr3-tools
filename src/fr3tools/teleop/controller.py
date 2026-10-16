@@ -137,9 +137,10 @@ class TeleopConfig:
     max_joint_step_deg: float = 3.0  # per tick / 틱당
     # Joint-speed cap for the commanded path, a little under the driver's limit (30 deg/s by default):
     # near full reach a few cm/s need >100 deg/s at the elbow, the driver falls behind and ends the
-    # stream on a target jump. The Cartesian step is shortened instead. / 관절 속도 상한(드라이버 한도
+    # stream on a target jump. The Cartesian step is shortened instead; 20 deg/s keeps the driver's
+    # braking lag, v²/(2a), near 4° and far from its 15° jump limit. / 관절 속도 상한(드라이버 한도
     # 아래): 팔이 펴진 구간에서 직교 이동을 줄여 드라이버가 뒤처지지 않게 한다.
-    max_joint_speed_deg: float = 25.0
+    max_joint_speed_deg: float = 20.0
     limit_margin_deg: float = 5.0
     stale_s: float = 0.3
     stop_after_s: float = 1.0

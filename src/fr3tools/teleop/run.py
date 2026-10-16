@@ -85,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="task frame: base | start | behind (operator behind the robot) | 'x y z yaw_deg' (base frame)",
     )
     ap.add_argument(
-        "--max-joint-speed", type=float, default=25.0, help="joint-speed cap of the command (deg/s)"
+        "--max-joint-speed", type=float, default=20.0, help="joint-speed cap of the command (deg/s)"
     )
     ap.add_argument("--table-z", type=float, default=0.0, help="table height in the base frame (m)")
     ap.add_argument("--min-height", type=float, default=0.05, help="grip point above the table (m)")
@@ -209,8 +209,11 @@ def main(argv=None) -> None:
                 # Fallback when the driver reports no status: the arm stops following the command.
                 # 상태 보고가 없으면: 팔이 명령을 따라오지 않는 것으로 판단.
                 lag = float(np.degrees(np.abs(robot.joint_positions() - ctl.q_cmd)).max())
-                lag_since = (lag_since or now) if lag > 5.0 else None
-                stuck = lag_since is not None and now - lag_since > 0.5
+                # The driver brakes ahead of each target, so while moving at v it trails the command by
+                # about v²/(2a) (≈4.4° at 20°/s with a = 45°/s²). Only a much larger, lasting gap means
+                # the stream is gone. / 드라이버는 미리 감속해 v²/(2a) 만큼 뒤따른다: 큰 지연만 고장.
+                lag_since = (lag_since or now) if lag > 12.0 else None
+                stuck = lag_since is not None and now - lag_since > 1.0
                 if (not active or stuck) and now - session_t > 1.0:
                     ctl.end()
                     robot.stop_streaming()
