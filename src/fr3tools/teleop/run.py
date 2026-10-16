@@ -41,11 +41,13 @@ DEMO_SCRIPT = [
     {"t": 1.4, "axes": {"lx": 0.0, "ly": 1.0}},
     {"t": 2.4, "axes": {"ly": 0.0, "ry": -0.7}},
     {"t": 3.2, "axes": {"ry": 0.0, "rx": 0.8}},
-    {"t": 4.0, "axes": {"rx": 0.0, "rt": 0.5}},
-    {"t": 4.4, "axes": {"rt": 1.0}},
+    {"t": 4.0, "axes": {"rx": 0.0}, "buttons": {"lb": 1}},
+    {"t": 4.2, "buttons": {"lb": 0}},
+    {"t": 4.4, "buttons": {"lb": 1}},
+    {"t": 4.6, "buttons": {"lb": 0}},
     {"t": 5.0, "buttons": {"b": 1}},
     {"t": 5.1, "buttons": {"b": 0, "y": 1}},
-    {"t": 8.5, "buttons": {"y": 0, "rb": 0}, "axes": {"rt": 0.0}},
+    {"t": 8.5, "buttons": {"y": 0, "rb": 0}},
     {"t": 8.8, "buttons": {"back": 1}},
     {"t": 9.0, "buttons": {"back": 0}},
 ]
@@ -83,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--box", type=float, nargs=6, metavar="V", help="xmin xmax ymin ymax zmin zmax (task frame, m)"
     )
-    ap.add_argument("--speed", choices=["slow", "normal", "fast"], default="slow")
+    ap.add_argument("--speed", choices=["slow", "normal", "fast"], default="normal")
     ap.add_argument("--rate", type=float, default=50.0)
     ap.add_argument("--duration", type=float, default=0.0, help="stop after N seconds (0 = until Ctrl-C)")
     ap.add_argument("--prefix", default="/fr")

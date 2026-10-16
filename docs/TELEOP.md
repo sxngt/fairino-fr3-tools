@@ -1,31 +1,31 @@
 # Gamepad teleoperation
 
 `fr3-teleop` drives the arm top-down with an Xbox 360 (or compatible) pad: the left stick moves
-the grip point in the table plane, the right stick moves it up and down and turns the wrist, the
-right trigger sets the gripper width. Speeds are proportional to stick deflection.
+the grip point in the table plane, the right stick moves it up and down and turns the wrist, and
+LB toggles the gripper open and closed. Speeds are proportional to stick deflection.
 
 Xbox 360 계열 패드로 팔을 탑다운 자세로 움직인다. 왼쪽 스틱 = 평면 이동, 오른쪽 스틱 = 상하·손목 회전,
-RT = 그리퍼 폭. 속도는 스틱 기울기에 비례한다.
+LB = 그리퍼 열기·닫기 토글. 속도는 스틱 기울기에 비례한다.
 
 ```bash
 fr3-teleop --fake --fake-pad          # no pad, no ROS: built-in demo on a fake arm
 fr3-teleop --fake                     # your pad, fake arm
 fr3-teleop                            # your pad, real driver, dry run (prints targets)
-fr3-teleop --execute --speed slow     # streams to fr3-driver
+fr3-teleop --execute                  # streams to fr3-driver (normal speed)
 fr3-teleop --probe-pad                # raw events, to write a profile
 ```
 
 ## Mapping (default profile, xpad) / 기본 배치
 
 ```
-   LT  (unmapped)                                   RT  gripper width: released open, pressed closed
-   LB  cycle speed preset                           RB  DEADMAN: hold to move
+   LT  (unmapped)                                   RT  (unmapped; opt-in gripper trigger)
+   LB  gripper toggle: open / close                 RB  DEADMAN: hold to move
   .------------------------------------------------------------------------.
   |  (L) left stick          [Back]   (Guide)   [Start]          (Y) home   |
   |      x / y               end session        begin      (X)          (B) |
   |                                                        save home   open |
-  |   d-pad                         (R) right stick              (A) close  |
-  |   up / down = faster / slower       up / down = z                       |
+  |   d-pad          (LS click)     (R) right stick              (A) close  |
+  |   up / down = faster / slower   cycle speed   up / down = z            |
   |                                     left / right = wrist yaw            |
   '------------------------------------------------------------------------'
 ```
@@ -35,11 +35,11 @@ fr3-teleop --probe-pad                # raw events, to write a profile
 | left stick | axes 0, 1 | x / y velocity in the task frame (radial deadzone, diagonals capped) |
 | right stick vertical | axis 4 | z velocity |
 | right stick horizontal | axis 3 | wrist yaw rate (right = clockwise from above) |
-| RT | axis 5 | gripper width: `open - t·(open - closed)` |
+| LB | button 4 | gripper toggle: first press opens, the next closes, and so on. A close is sent once and not repeated, so a grasped object is held at the force limit instead of squeezed harder |
 | RB | button 5 | deadman |
-| A / B | buttons 0 / 1 | close fully / open fully (the trigger is ignored until it moves again) |
+| A / B | buttons 0 / 1 | close / open directly |
 | X / Y | buttons 2 / 3 | save home / return to home (smoothly, while RB is held) |
-| LB, d-pad up/down | button 4, axis 7 | speed presets slow (2 cm/s, 15°/s), normal (5 cm/s, 30°/s), fast (10 cm/s, 45°/s) |
+| LS click, d-pad up/down | button 9, axis 7 | speed presets slow (4 cm/s, 25°/s), normal (8 cm/s, 40°/s, default), fast (14 cm/s, 60°/s) |
 | Start / Back | buttons 7 / 6 | begin / end the session |
 
 The pad is found by name ("X-Box 360" or "Xbox" in `/proc/bus/input/devices`, or the `JSIOCGNAME`
@@ -53,14 +53,14 @@ opened read-only. `--evdev` reads `/dev/input/event*` through python-evdev inste
   the yaw.
 * **Task frame:** `--frame base` (default), `--frame start` (axes of the gripper at the start, so
   stick-up means "the way the fingers face"), or `--frame "x y z yaw_deg"` (a table frame).
-* **Each tick (50 Hz):** scaled deadzone (0.12) and power curve (exponent 2): `v = curve(a) · v_max`
-  → first-order filter and Cartesian acceleration limit (0.25 m/s², 90°/s²) → integrate → clamp
+* **Each tick (50 Hz):** scaled deadzone (0.12) and power curve (exponent 1.5): `v = curve(a) · v_max`
+  → first-order filter and Cartesian acceleration limit (0.4 m/s², 120°/s²) → integrate → clamp
   to the workspace box and the z floor → IK on the start branch next to the previous solution, 5°
   from the joint limits, at most 3° per tick → stream the joints.
-* **Gripper:** RT gives `t ∈ [0, 1]` (rest −32767 → 0); commands go out only when the width moved
-  by 1 mm and at most 8 times per second, and the final value is always sent once the trigger
-  settles. Fully pressed commands the closed width; the force limit stops the fingers on the
-  object.
+* **Gripper:** LB toggles open and closed. Each change is sent once and then never repeated: closing
+  commands the closed width, the AG-95 force limit stops the fingers on the object, and the grasp
+  is held without squeezing harder. A/B open and close directly. An analog RT mode (two-state with
+  hysteresis) is available with `TeleopConfig(trigger_gripper=True)`.
 
 ## Safety rules / 안전 규칙
 

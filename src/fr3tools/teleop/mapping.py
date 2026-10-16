@@ -55,7 +55,8 @@ class Mapping:
             "save_home": "x",
             "start": "start",
             "stop": "back",
-            "cycle_speed": "lb",
+            "cycle_speed": "ls",
+            "gripper_toggle": "lb",
         }
     )
     trigger_rest: int = -AXIS_MAX

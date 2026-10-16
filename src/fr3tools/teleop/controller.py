@@ -77,9 +77,9 @@ class SpeedPreset:
 
 
 DEFAULT_PRESETS = (
-    SpeedPreset("slow", 0.02, 15.0),
-    SpeedPreset("normal", 0.05, 30.0),
-    SpeedPreset("fast", 0.10, 45.0),
+    SpeedPreset("slow", 0.04, 25.0),
+    SpeedPreset("normal", 0.08, 40.0),
+    SpeedPreset("fast", 0.14, 60.0),
 )
 
 
@@ -119,11 +119,11 @@ class TeleopConfig:
     """Tuning and safety limits; lengths in m. / 조정값과 안전 한계 (m)."""
 
     deadzone: float = 0.12
-    expo: float = 2.0
+    expo: float = 1.5
     presets: tuple[SpeedPreset, ...] = DEFAULT_PRESETS
     preset: int = 1
-    linear_accel: float = 0.25  # m/s²
-    yaw_accel_deg: float = 90.0  # deg/s²
+    linear_accel: float = 0.4  # m/s²
+    yaw_accel_deg: float = 120.0  # deg/s²
     filter_tau: float = 0.06  # s
     # Workspace box in task-frame axes around the start point, plus an absolute floor.
     # 시작점 주위의 작업 상자(작업 좌표축)와 절대 바닥.
@@ -145,6 +145,14 @@ class TeleopConfig:
     gripper_rate_hz: float = 8.0
     gripper_settle_s: float = 0.25
     trigger_rearm: float = 0.05  # trigger move that re-enables it after A/B / A·B 후 재활성화 이동량
+    # RT is a two-state control with hysteresis: press past ``trigger_close`` to close once, release
+    # below ``trigger_open`` to open once. A grasp is never re-sent, so the gripper holds the object at
+    # its force limit instead of squeezing harder. / RT 는 히스테리시스가 있는 두 상태 입력: 깊게 누르면
+    # 한 번 닫고, 떼면 한 번 연다. 잡은 뒤 다시 보내지 않아 더 조이지 않고 유지한다.
+    trigger_close: float = 0.6
+    trigger_open: float = 0.3
+    # Off by default: the gripper is driven by the toggle button (LB). / 기본은 꺼짐: LB 토글로 조작.
+    trigger_gripper: bool = False
 
 
 @dataclass
@@ -376,14 +384,24 @@ class TeleopController:
     def _gripper(self, inputs: Inputs, edges: set, now: float, out: TickOutput) -> None:
         roles = ROLES
         rt = inputs.rt
-        if roles["close"] in edges:
+        if roles["gripper_toggle"] in edges:
+            # First press opens; every press after that flips open <-> closed. A close is sent once
+            # and never repeated, so a grasped object is held at the force limit, not squeezed harder.
+            # 첫 누름은 열기, 이후 누를 때마다 열기·닫기 전환. 닫기는 한 번만 보내 더 조이지 않는다.
+            opening = self.gripper_target != self.cfg.open_width
+            self.gripper_target = self.cfg.open_width if opening else self.cfg.closed_width
+            self.trigger_latch = rt
+        elif roles["close"] in edges:
             self.gripper_target, self.trigger_latch = self.cfg.closed_width, rt
         elif roles["open"] in edges:
             self.gripper_target, self.trigger_latch = self.cfg.open_width, rt
         elif self.trigger_latch is not None and abs(rt - self.trigger_latch) > self.cfg.trigger_rearm:
             self.trigger_latch = None
-        if self.trigger_latch is None:
-            self.gripper_target = trigger_width(rt, self.cfg.open_width, self.cfg.closed_width)
+        if self.cfg.trigger_gripper and self.trigger_latch is None:
+            if rt >= self.cfg.trigger_close and self.gripper_target != self.cfg.closed_width:
+                self.gripper_target = self.cfg.closed_width
+            elif rt <= self.cfg.trigger_open and self.gripper_target != self.cfg.open_width:
+                self.gripper_target = self.cfg.open_width
         out.gripper_width = self.limiter.update(self.gripper_target, now)
 
     def status(self, rt: float = 0.0) -> str:
@@ -410,6 +428,7 @@ ROLES = {
     "start": "start",
     "stop": "stop",
     "cycle_speed": "cycle_speed",
+    "gripper_toggle": "gripper_toggle",
 }
 
 

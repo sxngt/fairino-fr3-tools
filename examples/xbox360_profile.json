@@ -36,7 +36,8 @@
     "save_home": "x",
     "start": "start",
     "stop": "back",
-    "cycle_speed": "lb"
+    "cycle_speed": "ls",
+    "gripper_toggle": "lb"
   },
   "trigger_rest": -32767,
   "trigger_full": 32767,

@@ -156,7 +156,7 @@ def test_speed_is_proportional_and_acceleration_limited():
     speeds = {}
     for a in (0.5, 1.0):
         ctl, _ = started()
-        run(ctl, pad(lx=a, buttons={"deadman": True}), 3.0)
+        run(ctl, pad(lx=a, buttons={"deadman": True}), 1.5)
         speeds[a] = np.linalg.norm(ctl.v)
     preset = TeleopConfig().presets[1].linear
     assert speeds[1.0] == pytest.approx(preset, rel=1e-3)
@@ -227,16 +227,56 @@ def test_ik_failure_holds_instead_of_jumping():
     assert any("holding" in f for f in flags)
 
 
-def test_trigger_controls_the_gripper_and_a_b_override_until_it_moves():
+def test_lb_toggles_open_then_closed_and_never_resends():
     ctl, _ = started()
+    sent = []
+    t = 0.0
+    for _press in range(3):  # open, close, open / 열기, 닫기, 열기
+        o = ctl.step(pad(buttons={"gripper_toggle": True}), t)
+        if o.gripper_width is not None:
+            sent.append(round(o.gripper_width, 4))
+        for k in range(30):  # keep holding the grasp / 유지
+            o = ctl.step(pad(), t + (k + 1) * DT)
+            if o.gripper_width is not None:
+                sent.append(round(o.gripper_width, 4))
+        t += 31 * DT
+    assert sent == [0.095, 0.010, 0.095]
+
+
+def test_rt_does_nothing_by_default():
+    ctl, _ = started()
+    run(ctl, pad(rt=1.0), 0.5)
+    assert ctl.gripper_target is None
+
+
+def test_trigger_closes_and_opens_once_with_hysteresis():
+    ctl, _ = started(TeleopConfig(trigger_gripper=True))
     out, t = run(ctl, pad(rt=0.0), 0.1)
-    out, t = run(ctl, pad(rt=1.0), 0.5, t)
+    out, t = run(ctl, pad(rt=0.4), 0.5, t)
+    assert ctl.gripper_target in (None, 0.095)  # between the thresholds nothing closes / 문턱 사이: 닫지 않음
+    sent = []
+    for k in range(40):  # press deep and keep holding / 깊게 눌러 유지
+        o = ctl.step(pad(rt=1.0), t + k * DT)
+        if o.gripper_width is not None:
+            sent.append(o.gripper_width)
+    t += 40 * DT
     assert ctl.gripper_target == pytest.approx(0.010)
+    assert sent == [pytest.approx(0.010)]  # one close command, never re-sent while held / 한 번만
+    run(ctl, pad(rt=0.5), 0.5, t)  # partial release keeps the grasp / 조금 떼도 유지
+    assert ctl.gripper_target == pytest.approx(0.010)
+    run(ctl, pad(rt=0.1), 0.5, t + 0.5)
+    assert ctl.gripper_target == pytest.approx(0.095)
+
+
+def test_a_b_override_until_the_trigger_moves():
+    ctl, _ = started(TeleopConfig(trigger_gripper=True))
+    out, t = run(ctl, pad(rt=1.0), 0.5)
     ctl.step(pad(rt=1.0, buttons={"open": True}), t + DT)
     run(ctl, pad(rt=1.0), 0.5, t + DT)
     assert ctl.gripper_target == pytest.approx(0.095)  # B wins while the trigger stays put / B 우선
-    run(ctl, pad(rt=0.5), 0.5, t + 1.0)
-    assert ctl.gripper_target == pytest.approx(trigger_width(0.5))  # trigger moved: back in control
+    run(ctl, pad(rt=0.0), 0.3, t + 1.0)
+    run(ctl, pad(rt=1.0), 0.3, t + 1.5)
+    assert ctl.gripper_target == pytest.approx(0.010)  # trigger moved: back in control / 트리거 복귀
 
 
 def test_trigger_is_ignored_until_it_moves_after_start():
