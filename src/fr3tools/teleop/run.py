@@ -146,7 +146,14 @@ def main(argv=None) -> None:
 
         from fr3tools.ros.adapter import FR3Ros, RosGripper
 
-        rclpy.init()
+        # Keep SIGINT for ourselves: rclpy's own handler would invalidate the context before the
+        # finally block asks the driver to stop the servo stream. / Ctrl-C 를 직접 처리해 서보 정지를 보장.
+        try:
+            from rclpy.signals import SignalHandlerOptions
+
+            rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+        except (ImportError, TypeError):
+            rclpy.init()
         node = Node("fr3_teleop")
         robot = FR3Ros(node, params, prefix=a.prefix)
         robot.wait_ready()

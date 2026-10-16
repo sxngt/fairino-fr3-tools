@@ -99,3 +99,8 @@ the vendor manuals. Each item says what you see, why, and what `fr3tools` does a
     hand-eye runner learns it: a predicted-visible pose that is missed tightens the facing limit.
 27. **Kinematic error, not pixel noise, is the floor of hand-eye accuracy.** Each pose's corners
     are whitened with the kinematic error model; without it the estimate is overconfident.
+
+- **Back-to-back gripper commands during a servo stream.** Each AG-95 move goes through the
+  controller RPC. A burst of them (an analog trigger sweeping the width) starved the ServoJ stream
+  and tripped the tracking-deviation monitor (j3, 8°). Send gripper commands on events, at most a
+  couple per second. / 서보 스트림 중 연속 그리퍼 명령은 ServoJ 를 굶겨 추종 편차 정지를 부른다.

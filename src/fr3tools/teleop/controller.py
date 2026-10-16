@@ -142,7 +142,10 @@ class TeleopConfig:
     open_width: float = STROKE_M
     closed_width: float = MIN_WIDTH_M
     gripper_min_delta: float = 0.001
-    gripper_rate_hz: float = 8.0
+    # At most two gripper commands per second: each AG-95 move goes through the controller's RPC
+    # and back-to-back commands starve the servo stream (seen as a tracking-deviation trip).
+    # 초당 2 회 이하: 연속 그리퍼 명령이 서보 스트림을 굶겨 추종 편차 정지를 일으켰다.
+    gripper_rate_hz: float = 2.0
     gripper_settle_s: float = 0.25
     trigger_rearm: float = 0.05  # trigger move that re-enables it after A/B / A·B 후 재활성화 이동량
     # RT is a two-state control with hysteresis: press past ``trigger_close`` to close once, release
