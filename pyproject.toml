@@ -41,6 +41,7 @@ fr3-driver = "fr3tools.ros.driver:main"
 fr3-gripper = "fr3tools.gripper:main"
 fr3-camera-calib = "fr3tools.calib.camera:main"
 fr3-handeye = "fr3tools.calib.run:main"
+fr3-teleop = "fr3tools.teleop.run:main"
 
 [project.urls]
 Homepage = "https://github.com/sxngt/fairino-fr3-tools"
