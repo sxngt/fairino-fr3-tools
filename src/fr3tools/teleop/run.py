@@ -157,9 +157,11 @@ def main(argv=None) -> None:
     period = 1.0 / a.rate
     t0 = time.monotonic()
     last_print = 0.0
+    session_t = 0.0
     try:
         while True:
             now = time.monotonic()
+            robot.spin(0.0)  # fresh /joint_states and /fr/status / 최신 상태 수신
             reader.poll()
             st = reader.state
             raw = normalize(st.axes, st.buttons, mapping, age=now - st.last_ok, connected=st.connected)
@@ -171,6 +173,7 @@ def main(argv=None) -> None:
                     if stream:
                         robot.start_streaming()
                     ctl.begin(q, inputs.rt)
+                    session_t = now
                     print("\n[teleop] session started", flush=True)
                 except Exception as exc:
                     print(f"\n[teleop] cannot start: {exc}", flush=True)
@@ -180,6 +183,16 @@ def main(argv=None) -> None:
                     robot.stop_streaming()
                 why = "input lost" if "stale" in out.flags else "requested"
                 print(f"\n[teleop] session ended ({why})", flush=True)
+            if ctl.active and stream and not a.fake:
+                # The driver may end the stream on its own (safety trip, error): follow it.
+                # 드라이버가 스트림을 끝낼 수 있다(안전 트립, 에러): 따라서 세션을 끝낸다.
+                driver = robot.status.get("driver", {})
+                if driver and not driver.get("servo_active", True) and now - session_t > 1.0:
+                    ctl.end()
+                    robot.stop_streaming()
+                    print(
+                        f"\n[teleop] driver ended the stream: {driver.get('servo_reason') or '?'}", flush=True
+                    )
             if ctl.active and out.q is not None:
                 if stream:
                     robot.stream_joints(out.q)
