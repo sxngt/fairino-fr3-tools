@@ -104,3 +104,8 @@ the vendor manuals. Each item says what you see, why, and what `fr3tools` does a
   controller RPC. A burst of them (an analog trigger sweeping the width) starved the ServoJ stream
   and tripped the tracking-deviation monitor (j3, 8°). Send gripper commands on events, at most a
   couple per second. / 서보 스트림 중 연속 그리퍼 명령은 ServoJ 를 굶겨 추종 편차 정지를 부른다.
+- **Never hold the RPC lock while waiting for the gripper.** When the fingers close on an object
+  the AG-95 never reaches the commanded width, so a wait-until-reached loop runs to its timeout
+  (5 s). If that loop holds the lock that also serialises ServoJ, the arm freezes mid-stream.
+  `ControllerGripper` sends under the lock and polls the position briefly, stopping once it stops
+  changing. / 물체를 잡으면 목표 폭에 도달하지 못한다: 락을 쥔 채 기다리면 서보 스트림이 멈춘다.
